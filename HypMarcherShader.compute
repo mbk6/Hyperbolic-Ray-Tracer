@@ -1,0 +1,254 @@
+﻿//Based on David Kuri's "GPU Ray Tracing in Unity" Tutorial (http://three-eyed-games.com/2018/05/03/gpu-ray-tracing-in-unity-part-1/)
+
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> Result;
+
+float4x4 _CameraToWorld;
+float4x4 _CameraInverseProjection;
+Texture2D<float4> _SkyboxTexture;
+SamplerState sampler_SkyboxTexture;
+
+static const float PI = 3.14159265f;
+static const float BOUNDS_DIST = 100;
+static const float STEP_MINIMUM = 0.1;
+
+struct Ray {
+    float3 origin;
+    float3 direction;
+};
+
+Ray CreateRay(float3 origin, float3 direction) {
+    //return Ray(origin, direction); Can you do this?
+    Ray ray;
+    ray.origin = origin;
+    ray.direction = direction;
+    return ray;
+}
+
+struct RayPoint {
+    float3 position;
+    float3 direction;
+    float distance;
+    float3 normal;   
+    float3 color;     
+};
+
+RayPoint CreateRayPoint() {
+    RayPoint pt;
+    pt.position = float3(0.0f, 0.0f, 0.0f);
+    pt.direction = float3(0.0f, 0.0f, 1.0f);
+    pt.distance = 1.#INF;
+    pt.normal = float3(0.0f, 0.0f, 0.0f);
+    pt.color = float3(0.0f, 0.0f, 0.0f);
+    return pt;
+}
+
+float hypDistance(float3 a, float3 b)
+{
+    float d = 1.0f + (pow(b.x - a.x, 2) + pow(b.y - a.y, 2) + pow(b.z - a.z, 2)) / (2*a.y*b.y);
+    return log(d + sqrt(d*d - 1));
+}
+
+void march(inout RayPoint pt, float distance)
+{
+    //This is probably not right
+    float j = atan2(pt.direction.z, pt.direction.x);
+    float k = -1 * acos(pt.direction.y) - PI / 2.0f;
+    float c = cos(k / 2.0f + PI / 4.0f);
+    float d = sin(k / 2.0f + PI / 4.0f);
+    float b = -1*pt.position.y*c;
+    float a = -1*b*d / c;
+    float f = (b*d+a*c*exp(2*distance)) / (c*c*exp(2*distance) + d*d);
+    float g = (d*a*exp(distance) - b*c*exp(distance)) / (c*c*exp(2*distance) + d*d);
+    
+    float h = (-2*b*exp(2*distance)*d*c*c + 2*a*exp(2*distance)*d*d*c) / pow(exp(2*distance)*c*c+d*d, 2);
+    float i = (b*exp(3*distance)*c*c*c - a*exp(3*distance)*d*c*c - b*exp(distance)*d*d*c + a*exp(distance)*d*d*d) / pow(exp(2*distance)*c*c+d*d, 2);
+    
+    pt.position = float3(f*cos(j) + pt.position.x, g ,f*sin(j) + pt.position.z);
+    pt.direction = float3(h*cos(j), i, h*sin(j));
+    pt.direction = normalize(pt.direction);
+}
+
+Ray CreateCameraRay(float2 uv) {
+    //Transform the camera origin to world space
+    float3 origin = mul(_CameraToWorld, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz; //xyz is a float3 object in struct float4 representing the first three coords.
+    float3 direction = mul(_CameraInverseProjection, float4(uv, 0.0f, 1.0f)).xyz;
+    //Convert direction from camera viewspace to world coords and normalize it
+    direction = mul(_CameraToWorld, float4(direction, 0.0f)).xyz;
+    direction = normalize(direction);
+
+    //Now we can creat the ray
+
+    return CreateRay(origin, direction);
+}
+
+void TestSphere(inout RayPoint bestPoint, float4 sphere)
+{
+    float dist = hypDistance(bestPoint.position, sphere.xyz) - sphere.w;
+    if (dist < bestPoint.distance)
+    {
+        bestPoint.distance = dist;
+        if(dist < STEP_MINIMUM) {
+            RayPoint pt = CreateRayPoint();
+            pt.
+            bestPoint.color = float3(0.0f, 0.0f, 1.0f);
+        }
+        
+    }
+}
+
+void Trace(inout RayPoint bestPoint)
+{
+    TestSphere(bestPoint, float4(0.0f, 1.0f, 0.0f, 1.0f));
+}
+
+bool inBounds(RayPoint pt)
+{
+    return pt.position.y > 0;
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+
+    uint width, height;
+    Result.GetDimensions(width, height); // I assume this passes in width and height be reference and changes them
+
+    //Transform pixel to [-1, 1] range to fit with u,v coordinate system and our perspective cuboid
+    float2 uv = float2((id.xy + 0.5)) / float2(width, height) * 2.0f - 1.0f; //This is component-wise division, btw. We add 0.5f to get the "middle" of the pixel
+
+    //Get the associated ray
+    Ray ray = CreateCameraRay(uv);
+
+    RayPoint bestPoint = CreateRayPoint();
+    bestPoint.position = ray.origin;
+    bestPoint.direction = ray.direction;
+    uint numMarches = 0;
+
+    float theta = acos(ray.direction.y) / -PI;
+    float phi = atan2(ray.direction.x, -ray.direction.z) / -PI * 0.5f;
+    bestPoint.color = _SkyboxTexture.SampleLevel(sampler_SkyboxTexture, float2(phi, theta), 0).xyz;
+
+    while (inBounds(bestPoint) && bestPoint.distance >= STEP_MINIMUM && numMarches < 50)
+    {
+        Trace(bestPoint);
+        if(bestPoint.distance < 1.#INF)
+        {
+            march(bestPoint, bestPoint.distance);
+        }
+        else 
+        {
+            //bestPoint.color = float3(0.0f, 0.0f, 0.0f);
+            break;
+        }
+
+        numMarches++;
+    }
+
+
+
+    
+    Result[id.xy] = float4(bestPoint.color, 1.0f);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+float3 findPlaneCircle(float2 a, float2 b) 
+{ 
+    float x1 = a.x;
+    float x2 = b.x;
+    float x3 = -b.x;
+    float y1 = a.y;
+    float y2 = b.y;
+    float y3 = -b.y;
+
+    float x12 = x1 - x2; 
+    float x13 = x1 - x3; 
+  
+    float y12 = y1 - y2; 
+    float y13 = y1 - y3; 
+  
+    float y31 = y3 - y1; 
+    float y21 = y2 - y1; 
+  
+    float x31 = x3 - x1; 
+    float x21 = x2 - x1; 
+  
+    // x1^2 - x3^2 
+    float sx13 = pow(x1, 2) - pow(x3, 2); 
+  
+    // y1^2 - y3^2 
+    float sy13 = pow(y1, 2) - pow(y3, 2); 
+  
+    float sx21 = pow(x2, 2) - pow(x1, 2); 
+    float sy21 = pow(y2, 2) - pow(y1, 2); 
+  
+    float f = ((sx13) * (x12) 
+             + (sy13) * (x12) 
+             + (sx21) * (x13) 
+             + (sy21) * (x13)) 
+            / (2 * ((y31) * (x12) - (y21) * (x13))); 
+    float g = ((sx13) * (y12) 
+             + (sy13) * (y12) 
+             + (sx21) * (y13) 
+             + (sy21) * (y13)) 
+            / (2 * ((x31) * (y12) - (x21) * (y13))); 
+  
+    float c = -pow(x1, 2) - pow(y1, 2) - 2 * g * x1 - 2 * f * y1; 
+  
+    // eqn of circle be x^2 + y^2 + 2*g*x + 2*f*y + c = 0 
+    // where centre is (h = -g, k = -f) and radius r 
+    // as r^2 = h^2 + k^2 - c 
+    float h = -g; 
+    float k = -f; 
+    float sqr_of_r = h * h + k * k - c; 
+  
+    // r is the radius 
+    float r = sqrt(sqr_of_r);
+
+    return float3(h, k, r);
+} 
+
+float3 directionTowards(float3 start, float3 end)
+{
+    //Convert to cylindrical coords
+    float3 startCyl = float3(sqrt(start.x*start.x + start.z*start.z), atan2(start.z, start.x), start.y);
+    float3 endCyl = float3(sqrt(end.x*end.x + end.z*end.z), atan2(end.z, end.x), end.y);
+
+    float3 circleInfo = findPlaneCircle(start.xz, end.xz);
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
